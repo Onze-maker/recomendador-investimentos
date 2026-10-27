@@ -3,8 +3,8 @@ import pandas as pd
 
 st.set_page_config(page_title="Motor Quantitativo Multi-Fatorial B3", page_icon="📈", layout="wide")
 
-st.title("🎯 Motor Quantitativo B3: Varredura Setorial & Indicadores Dinâmicos")
-st.markdown("O motor varre o mercado, compara o ativo com a média do seu setor e exibe os indicadores na tabela sempre que a importância atribuída for superior a 5.")
+st.title("🎯 Motor Quantitativo B3: Varredura Setorial & Filtro Dinâmico por Perfil")
+st.markdown("O motor agora cruza o seu perfil de risco com o risco individual de cada ativo, garantindo que perfis conservadores e arrojados recebam recomendações completamente diferentes.")
 
 # 1. PARÂMETROS MACRO
 st.sidebar.header("1. Perfil e Parâmetros")
@@ -12,9 +12,9 @@ capital_total = st.sidebar.number_input("Capital Disponível (R$)", min_value=10
 perfil_risco = st.sidebar.selectbox("Perfil de Risco", ["Conservador", "Moderado", "Arrojado"])
 horizonte_anos = st.sidebar.slider("Horizonte de Investimento (Anos)", min_value=1, max_value=30, value=5)
 
-# 2. PESOS CUSTOMIZÁVEIS (A regra dos sliders > 5 controla o que aparece na tabela)
+# 2. PESOS CUSTOMIZÁVEIS (Regra dos sliders > 5 controla as colunas da tabela)
 st.sidebar.header("2. Pesos e Critérios (0 a 10)")
-st.sidebar.markdown("Se definir **acima de 5**, o indicador aparecerá detalhado na tabela final:")
+st.sidebar.markdown("Se definir **acima de 5**, o indicador e a média do setor aparecerão na tabela:")
 peso_dy = st.sidebar.slider("Dividend Yield (DY)", 0, 10, 6)
 peso_gov = st.sidebar.slider("Governança (Novo Mercado)", 0, 10, 6)
 peso_roe = st.sidebar.slider("Eficiência (ROE)", 0, 10, 6)
@@ -25,11 +25,11 @@ peso_sol = st.sidebar.slider("Solidez (Dívida/EBITDA)", 0, 10, 5)
 soma = (peso_dy + peso_gov + peso_roe + peso_val + peso_sol) or 1
 p_dy, p_gov, p_roe, p_val, p_sol = peso_dy/soma, peso_gov/soma, peso_roe/soma, peso_val/soma, peso_sol/soma
 
-# 3. BASE DE DADOS AMPLIADA DA B3 COM MÉDIAS SETORIAIS
+# 3. BASE DE DADOS AMPLIADA DA B3 COM DIFERENTES NÍVEIS DE RISCO
 @st.cache_data
 def carregar_base_b3():
     return pd.DataFrame([
-        # Renda Fixa
+        # --- RENDA FIXA ---
         {
             "ticker": "CDB 100% CDI", "classe": "Renda Fixa", "setor": "Renda Fixa", "risco": "Baixo", "prazo_min": 0,
             "preco": 1.0, "dy": 0.11, "media_setor_dy": 0.10, "governanca": "FGC", "roe": 0.0, "media_setor_roe": 0.0,
@@ -40,7 +40,7 @@ def carregar_base_b3():
             "preco": 1000.0, "dy": 0.06, "media_setor_dy": 0.06, "governanca": "Soberano", "roe": 0.0, "media_setor_roe": 0.0,
             "pl": 0.0, "media_setor_pl": 0.0, "divida_ebitda": 0.0, "media_setor_divida": 0.0
         },
-        # Ações - Energia
+        # --- AÇÕES - ENERGIA ---
         {
             "ticker": "TAEE11 (Taesa)", "classe": "Ações", "setor": "Energia", "risco": "Baixo", "prazo_min": 3,
             "preco": 35.50, "dy": 0.102, "media_setor_dy": 0.075, "governanca": "Nível 2", "roe": 0.15, "media_setor_roe": 0.12,
@@ -51,18 +51,18 @@ def carregar_base_b3():
             "preco": 10.20, "dy": 0.085, "media_setor_dy": 0.075, "governanca": "Novo Mercado", "roe": 0.14, "media_setor_roe": 0.12,
             "pl": 6.8, "media_setor_pl": 9.0, "divida_ebitda": 1.8, "media_setor_divida": 2.5
         },
-        # Ações - Bancos
-        {
-            "ticker": "BBAS3 (Banco do Brasil)", "classe": "Ações", "setor": "Bancos", "risco": "Médio", "prazo_min": 3,
-            "preco": 27.40, "dy": 0.091, "media_setor_dy": 0.065, "governanca": "Novo Mercado", "roe": 0.21, "media_setor_roe": 0.18,
-            "pl": 5.2, "media_setor_pl": 7.5, "divida_ebitda": 0.0, "media_setor_divida": 0.0
-        },
+        # --- AÇÕES - BANCOS ---
         {
             "ticker": "ITUB4 (Itaú Unibanco)", "classe": "Ações", "setor": "Bancos", "risco": "Baixo", "prazo_min": 3,
             "preco": 33.10, "dy": 0.052, "media_setor_dy": 0.065, "governanca": "Nível 1", "roe": 0.20, "media_setor_roe": 0.18,
             "pl": 9.5, "media_setor_pl": 7.5, "divida_ebitda": 0.0, "media_setor_divida": 0.0
         },
-        # Ações - Mineração e Siderurgia / Commodities
+        {
+            "ticker": "BBAS3 (Banco do Brasil)", "classe": "Ações", "setor": "Bancos", "risco": "Médio", "prazo_min": 3,
+            "preco": 27.40, "dy": 0.091, "media_setor_dy": 0.065, "governanca": "Novo Mercado", "roe": 0.21, "media_setor_roe": 0.18,
+            "pl": 5.2, "media_setor_pl": 7.5, "divida_ebitda": 0.0, "media_setor_divida": 0.0
+        },
+        # --- AÇÕES - COMMODITIES E CICLICAS (RISCO ALTO) ---
         {
             "ticker": "VALE3 (Vale)", "classe": "Ações", "setor": "Mineração", "risco": "Alto", "prazo_min": 4,
             "preco": 62.00, "dy": 0.080, "media_setor_dy": 0.070, "governanca": "Novo Mercado", "roe": 0.18, "media_setor_roe": 0.15,
@@ -73,9 +73,9 @@ def carregar_base_b3():
             "preco": 38.50, "dy": 0.135, "media_setor_dy": 0.090, "governanca": "Nível 2", "roe": 0.25, "media_setor_roe": 0.16,
             "pl": 4.5, "media_setor_pl": 7.0, "divida_ebitda": 0.9, "media_setor_divida": 1.5
         },
-        # FIIs
+        # --- FIIs ---
         {
-            "ticker": "KNCR11 (FII Papel)", "classe": "FIIs", "setor": "Fundos Imobiliários", "risco": "Médio", "prazo_min": 2,
+            "ticker": "KNCR11 (FII Papel)", "classe": "FIIs", "setor": "Fundos Imobiliários", "risco": "Baixo", "prazo_min": 2,
             "preco": 104.50, "dy": 0.122, "media_setor_dy": 0.100, "governanca": "Gestão Profissional", "roe": 0.0, "media_setor_roe": 0.0,
             "pl": 0.0, "media_setor_pl": 0.0, "divida_ebitda": 0.0, "media_setor_divida": 0.0
         },
@@ -108,6 +108,17 @@ def obter_alocacao(perfil):
 
 if st.button("Rodar Varredura e Otimização Inteligente", type="primary"):
     df = carregar_base_b3()
+    
+    # FILTRO DE RISCO ESTRITO BASEADO NO PERFIL DO USUÁRIO
+    if perfil_risco == "Conservador":
+        riscos_permitidos = ["Baixo"]
+    elif perfil_risco == "Moderado":
+        riscos_permitidos = ["Baixo", "Médio"]
+    else: # Arrojado
+        riscos_permitidos = ["Baixo", "Médio", "Alto"]
+        
+    df = df[(df["risco"].isin(riscos_permitidos)) | (df["classe"] == "Renda Fixa")]
+    
     df["Score"] = df.apply(calcular_score, axis=1)
     
     pesos = obter_alocacao(perfil_risco)
@@ -130,17 +141,17 @@ if st.button("Rodar Varredura e Otimização Inteligente", type="primary"):
         valor_por_ativo = valor_classe / len(selecionados)
         
         for _, ativo in selecionados.iterrows():
-            # Dicionário base obrigatório
             item = {
                 "Classe": classe,
                 "Ativo": ativo["ticker"],
+                "Risco": ativo["risco"],
                 "Preço (R$)": f"R$ {ativo['preco']:.2f}",
                 "Setor": ativo["setor"],
                 "Alvo (%)": round((peso_alvo / len(selecionados)) * 100, 2),
                 "Valor (R$)": round(valor_por_ativo, 2),
             }
             
-            # ADICIONA DINAMICAMENTE OS INDICADORES SE O SLIDER FOR > 5
+            # EXIBE OS INDICADORES APENAS SE O SLIDER CORRESPONDENTE FOR > 5
             if peso_dy > 5:
                 item["DY Ativo"] = f"{ativo['dy']*100:.1f}%"
                 item["Média Setor DY"] = f"{ativo['media_setor_dy']*100:.1f}%"
@@ -165,4 +176,4 @@ if st.button("Rodar Varredura e Otimização Inteligente", type="primary"):
     df_res = pd.DataFrame(carteira)
     st.dataframe(df_res, use_container_width=True)
     
-    st.success("✅ Varredura concluída! Os indicadores exibidos na tabela refletem exatamente os critérios onde seu peso de importância foi configurado acima de 5.")
+    st.success("✅ Agora o motor filtra os ativos pelo risco compatível com o seu perfil: perfis conservadores verão apenas opções seguras, enquanto perfis arrojados desbloqueiam os ativos de maior volatilidade e retorno!")
