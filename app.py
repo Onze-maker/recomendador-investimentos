@@ -1,8 +1,8 @@
 
 import streamlit as st
 import pandas as pd
-import yfinance as yf
 import numpy as np
+import yfinance as yf
 
 st.set_page_config(
     page_title="Motor Quantitativo B3",
@@ -12,57 +12,57 @@ st.set_page_config(
 
 st.title("⚡ Motor Quantitativo B3")
 st.caption(
-    "Ranking dinâmico por indicadores fundamentalistas, "
-    "com pesos ajustáveis e carteira recalculada automaticamente."
+    "Seleção dinâmica por indicadores, perfil de risco e horizonte de investimento."
 )
 
 # =========================================================
-# 1. PARÂMETROS
+# 1. PARÂMETROS DO USUÁRIO
 # =========================================================
 
-st.sidebar.header("1. Perfil e parâmetros")
+st.sidebar.header("1. Parâmetros")
 
-capital_total = st.sidebar.number_input(
+capital = st.sidebar.number_input(
     "Capital disponível (R$)",
     min_value=100.0,
     value=100000.0,
     step=1000.0
 )
 
-perfil_risco = st.sidebar.selectbox(
+perfil = st.sidebar.selectbox(
     "Perfil de risco",
     ["Conservador", "Moderado", "Arrojado"]
 )
 
-horizonte_anos = st.sidebar.slider(
+horizonte = st.sidebar.slider(
     "Horizonte de investimento (anos)",
-    1, 30, 5
+    min_value=1,
+    max_value=30,
+    value=5
 )
 
 st.sidebar.header("2. Pesos dos indicadores")
 st.sidebar.caption(
-    "Altere os pesos para recalcular o ranking e a carteira."
+    "Os indicadores com peso acima de 5 serão exibidos "
+    "com comparação entre o ativo e a média do setor."
 )
 
 peso_dy = st.sidebar.slider("Dividend Yield", 0, 10, 5)
 peso_roe = st.sidebar.slider("ROE", 0, 10, 5)
-peso_val = st.sidebar.slider("Valuation / P/L", 0, 10, 5)
-peso_sol = st.sidebar.slider("Solidez financeira", 0, 10, 5)
+peso_pl = st.sidebar.slider("Valuation / P/L", 0, 10, 5)
+peso_sol = st.sidebar.slider("Solidez / Dívida", 0, 10, 5)
 
-pesos = {
-    "score_dy": peso_dy,
-    "score_roe": peso_roe,
-    "score_val": peso_val,
-    "score_sol": peso_sol,
+PESOS = {
+    "DY": peso_dy,
+    "ROE": peso_roe,
+    "PL": peso_pl,
+    "SOL": peso_sol,
 }
-
-soma_pesos = sum(pesos.values())
 
 # =========================================================
 # 2. UNIVERSO DE ATIVOS
 # =========================================================
 
-ACOES_B3 = [
+ACOES = [
     "TAEE11.SA", "CPLE6.SA", "EGIE3.SA", "CMIG4.SA",
     "ENEV3.SA", "SBSP3.SA", "SAPR11.SA",
     "ITUB4.SA", "BBAS3.SA", "BBDC4.SA", "SANB11.SA",
@@ -72,20 +72,19 @@ ACOES_B3 = [
     "MGLU3.SA", "VAMO3.SA",
 ]
 
-FIIS_B3 = [
+FIIS = [
     "MXRF11.SA", "KNCR11.SA", "CPTS11.SA", "HGLG11.SA",
     "XPML11.SA", "VISC11.SA", "IRDM11.SA", "BTLG11.SA",
 ]
 
-UNIVERSO_B3 = ACOES_B3 + FIIS_B3
+UNIVERSO = ACOES + FIIS
 
 # =========================================================
-# 3. COLETA DE DADOS
-# O cache evita consultar o Yahoo a cada movimento de slider.
+# 3. COLETA DE DADOS DE MERCADO
 # =========================================================
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def varrer_mercado_b3(tickers):
+def coletar_dados(tickers):
     registros = []
 
     for ticker in tickers:
@@ -98,31 +97,26 @@ def varrer_mercado_b3(tickers):
                 or info.get("regularMarketPreviousClose")
             )
 
-            if not preco or preco <= 0:
+            if preco is None or preco <= 0:
                 continue
 
-            dy = info.get("dividendYield")
-            roe = info.get("returnOnEquity")
-            pl = info.get("trailingPE")
-            divida_pl = info.get("debtToEquity")
-            beta = info.get("beta")
+            def numero(campo):
+                valor = info.get(campo)
+                if valor is None:
+                    return np.nan
+                try:
+                    valor = float(valor)
+                    return valor if np.isfinite(valor) else np.nan
+                except (ValueError, TypeError):
+                    return np.nan
 
-            dy = float(dy) if dy is not None else np.nan
-            roe = float(roe) if roe is not None else np.nan
-            pl = float(pl) if pl is not None else np.nan
-            divida_pl = (
-                float(divida_pl)
-                if divida_pl is not None else np.nan
-            )
-            beta = float(beta) if beta is not None else np.nan
+            classe = "FIIs" if ticker in FIIS else "Ações"
 
-            classe = (
-                "FIIs" if ticker in FIIS_B3 else "Ações"
-            )
+            beta = numero("beta")
+            divida_pl = numero("debtToEquity")
 
-            # Beta ausente não é tratado como baixo risco.
             if pd.isna(beta):
-                risco = "Não classificado"
+                risco = "Desconhecido"
             elif beta < 0.7:
                 risco = "Baixo"
             elif beta <= 1.2:
@@ -130,284 +124,434 @@ def varrer_mercado_b3(tickers):
             else:
                 risco = "Alto"
 
+            # Prazo mínimo indicativo para esta estratégia.
+            if classe == "FIIs":
+                prazo_min = 2
+            elif risco == "Alto":
+                prazo_min = 5
+            else:
+                prazo_min = 3
+
             registros.append({
-                "ticker": ticker.replace(".SA", ""),
-                "classe": classe,
-                "setor": info.get("sector") or (
-                    "Fundos Imobiliários"
-                    if classe == "FIIs" else "Não informado"
+                "Ativo": ticker.replace(".SA", ""),
+                "Classe": classe,
+                "Setor": (
+                    info.get("sector")
+                    or ("Fundos Imobiliários" if classe == "FIIs"
+                        else "Setor não informado")
                 ),
-                "risco": risco,
-                "preco": preco,
-                "dy": dy,
-                "roe": roe,
-                "pl": pl if not pd.isna(pl) and pl > 0
-                    else np.nan,
-                "divida_pl": divida_pl,
-                "beta": beta,
-                "prazo_min": (
-                    2 if classe == "FIIs"
-                    else 5 if risco == "Alto"
-                    else 3
-                ),
+                "Preço": float(preco),
+                "DY": numero("dividendYield"),
+                "ROE": numero("returnOnEquity"),
+                "PL": numero("trailingPE"),
+                "SOL": divida_pl,
+                "Beta": beta,
+                "Risco": risco,
+                "Prazo mínimo": prazo_min,
             })
 
         except Exception:
-            # Um ticker com falha não interrompe a varredura.
             continue
 
     colunas = [
-        "ticker", "classe", "setor", "risco", "preco",
-        "dy", "roe", "pl", "divida_pl", "beta", "prazo_min"
+        "Ativo", "Classe", "Setor", "Preço", "DY", "ROE",
+        "PL", "SOL", "Beta", "Risco", "Prazo mínimo"
     ]
 
     return pd.DataFrame(registros, columns=colunas)
 
 
-# =========================================================
-# 4. NORMALIZAÇÃO DOS INDICADORES
-# Compara os ativos do universo numa escala de 0 a 10.
-# =========================================================
-
-def calcular_scores(df):
-    df = df.copy()
-
-    # Quanto maior, melhor.
-    df["score_dy"] = (
-        df["dy"].rank(pct=True) * 10
-    )
-
-    df["score_roe"] = (
-        df["roe"].rank(pct=True) * 10
-    )
-
-    # P/L positivo menor tende a receber nota maior.
-    # P/L ausente ou negativo não é inventado.
-    df["score_val"] = (
-        1 - df["pl"].rank(pct=True)
-    ) * 10
-
-    # Menor dívida em relação ao patrimônio recebe nota maior.
-    # Não confundir Dívida/PL com Dívida Líquida/EBITDA.
-    df["score_sol"] = (
-        1 - df["divida_pl"].rank(pct=True)
-    ) * 10
-
-    colunas_score = [
-        "score_dy", "score_roe", "score_val", "score_sol"
-    ]
-
-    # Pesos zero são ignorados.
-    # Indicadores ausentes não recebem uma nota fictícia:
-    # o denominador considera apenas indicadores disponíveis.
-    numerador = pd.Series(0.0, index=df.index)
-    denominador = pd.Series(0.0, index=df.index)
-
-    for coluna, peso in pesos.items():
-        if peso == 0:
-            continue
-
-        disponivel = df[coluna].notna()
-        numerador.loc[disponivel] += (
-            df.loc[disponivel, coluna] * peso
-        )
-        denominador.loc[disponivel] += peso
-
-    df["Score"] = (
-        numerador.div(denominador.where(denominador > 0))
-    )
-
-    # Se todos os pesos forem zero, não existe preferência.
-    if soma_pesos == 0:
-        df["Score"] = np.nan
-
-    return df
-
-
-# =========================================================
-# 5. ALOCAÇÃO POR PERFIL
-# =========================================================
-
-def obter_alocacao(perfil):
-    alocacoes = {
-        "Conservador": {
-            "Renda Fixa": 0.85, "Ações": 0.05, "FIIs": 0.10
-        },
-        "Moderado": {
-            "Renda Fixa": 0.50, "Ações": 0.30, "FIIs": 0.20
-        },
-        "Arrojado": {
-            "Renda Fixa": 0.15, "Ações": 0.60, "FIIs": 0.25
-        },
-    }
-    return alocacoes[perfil]
-
-
-# =========================================================
-# 6. ATUALIZAÇÃO DOS DADOS
-# =========================================================
-
 if st.sidebar.button("🔄 Atualizar dados de mercado"):
-    varrer_mercado_b3.clear()
+    coletar_dados.clear()
     st.rerun()
 
-with st.spinner("Consultando os dados disponíveis no Yahoo Finance..."):
-    df = varrer_mercado_b3(tuple(UNIVERSO_B3))
+with st.spinner("Consultando indicadores disponíveis..."):
+    df = coletar_dados(tuple(UNIVERSO))
 
 if df.empty:
     st.error(
-        "Não foi possível obter cotações. "
-        "Verifique sua conexão e tente atualizar os dados."
+        "Não foi possível carregar os dados. "
+        "Verifique a conexão e tente atualizar."
     )
     st.stop()
 
 # =========================================================
-# 7. SCORE DINÂMICO E FILTROS
+# 4. MÉDIAS SETORIAIS
+# Calculadas antes dos filtros de risco e prazo.
 # =========================================================
 
-df = calcular_scores(df)
+indicadores = ["DY", "ROE", "PL", "SOL"]
 
-if perfil_risco == "Conservador":
-    riscos_permitidos = ["Baixo"]
-elif perfil_risco == "Moderado":
-    riscos_permitidos = ["Baixo", "Médio"]
-else:
-    riscos_permitidos = ["Baixo", "Médio", "Alto"]
+medias = (
+    df.groupby(["Classe", "Setor"], dropna=False)[indicadores]
+    .mean()
+    .reset_index()
+)
 
-df_filtrado = df[
-    df["risco"].isin(riscos_permitidos)
-].copy()
+medias = medias.rename(columns={
+    "DY": "Média setor DY",
+    "ROE": "Média setor ROE",
+    "PL": "Média setor P/L",
+    "SOL": "Média setor Dívida/PL",
+})
 
-# Sem pesos, não há ranking fundamentado nas preferências.
+# =========================================================
+# 5. SCORE FUNDAMENTALISTA
+# Comparação relativa dentro de cada classe de ativo.
+# =========================================================
+
+df["Score DY"] = (
+    df.groupby("Classe")["DY"].rank(pct=True) * 10
+)
+
+df["Score ROE"] = (
+    df.groupby("Classe")["ROE"].rank(pct=True) * 10
+)
+
+# P/L menor é preferível; P/L negativo ou ausente não é usado.
+pl_valido = df["PL"].where(df["PL"] > 0)
+
+df["Score P/L"] = (
+    1 - pl_valido.groupby(df["Classe"]).rank(pct=True)
+) * 10
+
+# Menor dívida sobre patrimônio é preferível.
+df["Score Solidez"] = (
+    1 - df.groupby("Classe")["SOL"].rank(pct=True)
+) * 10
+
+COLUNAS_SCORE = {
+    "DY": "Score DY",
+    "ROE": "Score ROE",
+    "PL": "Score P/L",
+    "SOL": "Score Solidez",
+}
+
+soma_pesos = sum(PESOS.values())
+
 if soma_pesos == 0:
-    st.warning(
-        "Todos os pesos estão zerados. "
-        "Ajuste ao menos um indicador para gerar o ranking."
-    )
+    st.warning("Defina peso maior que zero em pelo menos um indicador.")
     st.stop()
 
+numerador = pd.Series(0.0, index=df.index)
+denominador = pd.Series(0.0, index=df.index)
+
+for indicador, peso in PESOS.items():
+    if peso == 0:
+        continue
+
+    coluna = COLUNAS_SCORE[indicador]
+    disponivel = df[coluna].notna()
+
+    numerador.loc[disponivel] += (
+        df.loc[disponivel, coluna] * peso
+    )
+    denominador.loc[disponivel] += peso
+
+df["Score fundamentalista"] = numerador.div(
+    denominador.where(denominador > 0)
+)
+
 # =========================================================
-# 8. CONSTRUÇÃO DA CARTEIRA
-# Recalculada automaticamente em cada interação.
+# 6. PERFIL DE RISCO E HORIZONTE
+# Ambos afetam a pontuação e a elegibilidade.
 # =========================================================
 
-alocacao = obter_alocacao(perfil_risco)
+limites_beta = {
+    "Conservador": 0.9,
+    "Moderado": 1.2,
+    "Arrojado": 2.0,
+}
+
+multiplicador_perfil = {
+    "Conservador": 2.0,
+    "Moderado": 1.0,
+    "Arrojado": 0.35,
+}[perfil]
+
+if horizonte <= 2:
+    multiplicador_prazo = 2.0
+elif horizonte <= 5:
+    multiplicador_prazo = 1.3
+elif horizonte <= 10:
+    multiplicador_prazo = 1.0
+else:
+    multiplicador_prazo = 0.7
+
+beta_positivo = df["Beta"].clip(lower=0)
+
+df["Penalidade risco"] = (
+    (beta_positivo - 0.7).clip(lower=0)
+    * multiplicador_perfil
+    * multiplicador_prazo
+).clip(upper=5)
+
+df.loc[df["Beta"].isna(), "Penalidade risco"] = min(
+    5.0,
+    1.5 * multiplicador_perfil * multiplicador_prazo
+)
+
+# Horizonte curto: maior importância da estabilidade e da renda.
+# Horizonte longo: maior importância da eficiência e da solidez.
+df["Ajuste horizonte"] = 0.0
+
+if horizonte <= 2:
+    df["Ajuste horizonte"] = (
+        df["Score Solidez"].fillna(5) * 0.15
+        + df["Score DY"].fillna(5) * 0.05
+        - 1.0
+    )
+elif horizonte >= 10:
+    df["Ajuste horizonte"] = (
+        df["Score ROE"].fillna(5) * 0.10
+        + df["Score Solidez"].fillna(5) * 0.10
+        - 1.0
+    )
+
+df["Score final"] = (
+    df["Score fundamentalista"]
+    + df["Ajuste horizonte"]
+    - df["Penalidade risco"]
+).clip(lower=0, upper=10)
+
+df.loc[
+    df["Score fundamentalista"].isna(),
+    "Score final"
+] = np.nan
+
+# =========================================================
+# 7. ELEGIBILIDADE
+# =========================================================
+
+df["Elegível"] = (
+    (df["Prazo mínimo"] <= horizonte)
+    & df["Score final"].notna()
+)
+
+# Conservador e moderado exigem beta conhecido e dentro do limite.
+# Para o arrojado, beta desconhecido é permitido com penalidade,
+# mas continua sendo um dado ausente que exige cautela.
+if perfil == "Arrojado":
+    beta_ok = (
+        df["Beta"].isna()
+        | (df["Beta"] <= limites_beta[perfil])
+    )
+else:
+    beta_ok = (
+        df["Beta"].notna()
+        & (df["Beta"] <= limites_beta[perfil])
+    )
+
+df["Elegível"] = df["Elegível"] & beta_ok
+
+# =========================================================
+# 8. ALOCAÇÃO POR PERFIL
+# =========================================================
+
+alocacoes = {
+    "Conservador": {
+        "Renda Fixa": 0.85, "Ações": 0.05, "FIIs": 0.10
+    },
+    "Moderado": {
+        "Renda Fixa": 0.50, "Ações": 0.30, "FIIs": 0.20
+    },
+    "Arrojado": {
+        "Renda Fixa": 0.15, "Ações": 0.60, "FIIs": 0.25
+    },
+}
+
+alocacao = alocacoes[perfil]
+
+# =========================================================
+# 9. MONTAGEM DA CARTEIRA
+# =========================================================
+
 carteira = []
 
-for classe, peso_alvo in alocacao.items():
-    valor_classe = capital_total * peso_alvo
+for classe, fracao in alocacao.items():
+    valor_classe = capital * fracao
 
     if valor_classe <= 0:
         continue
 
     if classe == "Renda Fixa":
-        # Simulação ilustrativa, não uma cotação ao vivo.
         carteira.append({
             "Classe": "Renda Fixa",
-            "Ativo": "Reserva de renda fixa (simulada)",
+            "Ativo": "Alocação ilustrativa em renda fixa",
             "Setor": "Renda Fixa",
-            "Risco": "Baixo",
+            "Risco": "Depende do produto",
             "Preço (R$)": np.nan,
             "Score": np.nan,
-            "Alvo (%)": peso_alvo * 100,
-            "Valor (R$)": valor_classe,
-            "Observação": (
-                "Escolha o produto e confirme taxa, "
-                "prazo, liquidez e tributação."
-            ),
+            "Alvo (%)": round(fracao * 100, 2),
+            "Valor (R$)": round(valor_classe, 2),
         })
         continue
 
-    candidatos = df_filtrado[
-        (df_filtrado["classe"] == classe)
-        & (df_filtrado["prazo_min"] <= horizonte_anos)
-        & (df_filtrado["Score"].notna())
-    ].copy()
-
-    candidatos = candidatos.sort_values(
-        "Score", ascending=False
-    )
+    candidatos = df[
+        (df["Classe"] == classe)
+        & df["Elegível"]
+    ].sort_values("Score final", ascending=False)
 
     selecionados = candidatos.head(2)
 
     if selecionados.empty:
         st.warning(
-            f"Não há candidatos elegíveis para {classe} "
-            "com os filtros atuais."
+            f"Não há ativos elegíveis para {classe}. "
+            "A parcela correspondente ficará não alocada."
         )
         continue
 
-    # Distribuição igualitária entre os selecionados.
     valor_por_ativo = valor_classe / len(selecionados)
 
     for _, ativo in selecionados.iterrows():
-        carteira.append({
+        item = {
             "Classe": classe,
-            "Ativo": ativo["ticker"],
-            "Setor": ativo["setor"],
-            "Risco": ativo["risco"],
-            "Preço (R$)": round(ativo["preco"], 2),
-            "Score": round(ativo["Score"], 2),
+            "Ativo": ativo["Ativo"],
+            "Setor": ativo["Setor"],
+            "Risco": ativo["Risco"],
+            "Preço (R$)": round(ativo["Preço"], 2),
+            "Score": round(ativo["Score final"], 2),
             "Alvo (%)": round(
-                peso_alvo * 100 / len(selecionados), 2
+                fracao * 100 / len(selecionados), 2
             ),
             "Valor (R$)": round(valor_por_ativo, 2),
-        })
+        }
 
-# =========================================================
-# 9. RESULTADOS
-# =========================================================
+        # Exibir ativo e média do setor sempre que peso > 5.
+        # Percentuais para DY e ROE; múltiplo para P/L;
+        # relação percentual para Dívida/PL.
+        for indicador, peso in PESOS.items():
+            if peso <= 5:
+                continue
 
-st.subheader("📊 Carteira sugerida")
+            media_setor = medias[
+                (medias["Classe"] == ativo["Classe"])
+                & (medias["Setor"] == ativo["Setor"])
+            ]
+
+            media = (
+                media_setor.iloc[0]
+                if not media_setor.empty else None
+            )
+
+            valor = ativo[indicador]
+
+            if indicador == "DY":
+                item["DY ativo (%)"] = (
+                    round(valor * 100, 2)
+                    if pd.notna(valor) else "N/D"
+                )
+                item["Média setor DY (%)"] = (
+                    round(media["Média setor DY"] * 100, 2)
+                    if media is not None
+                    and pd.notna(media["Média setor DY"])
+                    else "N/D"
+                )
+
+            elif indicador == "ROE":
+                item["ROE ativo (%)"] = (
+                    round(valor * 100, 2)
+                    if pd.notna(valor) else "N/D"
+                )
+                item["Média setor ROE (%)"] = (
+                    round(media["Média setor ROE"] * 100, 2)
+                    if media is not None
+                    and pd.notna(media["Média setor ROE"])
+                    else "N/D"
+                )
+
+            elif indicador == "PL":
+                item["P/L ativo"] = (
+                    round(valor, 2)
+                    if pd.notna(valor) else "N/D"
+                )
+                item["Média setor P/L"] = (
+                    round(media["Média setor P/L"], 2)
+                    if media is not None
+                    and pd.notna(media["Média setor P/L"])
+                    else "N/D"
+                )
+
+            elif indicador == "SOL":
+                item["Dívida/PL ativo (%)"] = (
+                    round(valor, 2)
+                    if pd.notna(valor) else "N/D"
+                )
+                item["Média setor Dívida/PL (%)"] = (
+                    round(media["Média setor Dívida/PL"], 2)
+                    if media is not None
+                    and pd.notna(media["Média setor Dívida/PL"])
+                    else "N/D"
+                )
+
+        carteira.append(item)
 
 df_carteira = pd.DataFrame(carteira)
 
+# =========================================================
+# 10. RESULTADOS
+# =========================================================
+
+st.subheader("📊 Carteira dinâmica")
+st.caption(
+    f"Perfil: {perfil} | Horizonte: {horizonte} anos | "
+    f"Pesos DY/ROE/P-L/Solidez: "
+    f"{peso_dy}/{peso_roe}/{peso_pl}/{peso_sol}"
+)
+
 if df_carteira.empty:
-    st.warning(
-        "Nenhum ativo elegível para os parâmetros escolhidos."
-    )
+    st.warning("Nenhum ativo selecionado.")
 else:
-    st.dataframe(df_carteira, use_container_width=True)
-
-    total_alocado = df_carteira["Valor (R$)"].sum()
-    col1, col2, col3 = st.columns(3)
-
-    col1.metric("Capital disponível", f"R$ {capital_total:,.2f}")
-    col2.metric("Capital alocado", f"R$ {total_alocado:,.2f}")
-    col3.metric(
-        "Saldo não alocado",
-        f"R$ {capital_total - total_alocado:,.2f}"
+    st.dataframe(
+        df_carteira,
+        use_container_width=True,
+        hide_index=True
     )
 
-st.subheader("🏆 Ranking dos ativos")
+total_alocado = (
+    df_carteira["Valor (R$)"].sum()
+    if not df_carteira.empty else 0
+)
 
-colunas_ranking = [
-    "ticker", "classe", "setor", "risco", "preco",
-    "dy", "roe", "pl", "divida_pl", "Score"
+saldo = capital - total_alocado
+
+c1, c2, c3 = st.columns(3)
+c1.metric("Capital disponível", f"R$ {capital:,.2f}")
+c2.metric("Capital alocado", f"R$ {total_alocado:,.2f}")
+c3.metric("Saldo não alocado", f"R$ {saldo:,.2f}")
+
+st.subheader("🏆 Ranking completo")
+
+colunas = [
+    "Ativo", "Classe", "Setor", "Risco", "Preço",
+    "DY", "ROE", "PL", "SOL", "Beta",
+    "Score fundamentalista", "Penalidade risco",
+    "Ajuste horizonte", "Score final", "Elegível"
 ]
 
-ranking = df_filtrado.sort_values(
-    "Score", ascending=False, na_position="last"
+ranking = df.sort_values(
+    "Score final",
+    ascending=False,
+    na_position="last"
 )
 
 st.dataframe(
-    ranking[colunas_ranking].rename(columns={
-        "ticker": "Ativo",
-        "classe": "Classe",
-        "setor": "Setor",
-        "risco": "Risco",
-        "preco": "Preço (R$)",
-        "dy": "Dividend Yield",
-        "roe": "ROE",
-        "pl": "P/L",
-        "divida_pl": "Dívida/PL",
+    ranking[colunas].rename(columns={
+        "Preço": "Preço (R$)",
+        "DY": "DY (decimal)",
+        "ROE": "ROE (decimal)",
+        "PL": "P/L",
+        "SOL": "Dívida/PL (%)",
     }),
-    use_container_width=True
+    use_container_width=True,
+    hide_index=True
 )
 
 st.caption(
-    "Dados sujeitos à disponibilidade e aos atrasos do Yahoo Finance. "
-    "Os indicadores ausentes são tratados como indisponíveis. "
-    "Os scores são relativos ao universo consultado, não garantias "
-    "de retorno. A renda fixa exibida é ilustrativa."
+    "Fonte: Yahoo Finance. Os dados podem estar atrasados ou ausentes. "
+    "Os scores e prazos são critérios heurísticos, não previsões "
+    "de retorno. A renda fixa é ilustrativa e não representa "
+    "uma cotação ou oferta de investimento. As médias setoriais "
+    "usam os ativos disponíveis neste universo, antes dos filtros "
+    "de elegibilidade."
 )
