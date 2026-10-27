@@ -3,8 +3,8 @@ import pandas as pd
 
 st.set_page_config(page_title="Motor Quantitativo Multi-Fatorial B3", page_icon="📈", layout="wide")
 
-st.title("🎯 Motor Quantitativo B3: Varredura Setorial & Filtro Dinâmico por Perfil")
-st.markdown("O motor agora cruza o seu perfil de risco com o risco individual de cada ativo, garantindo que perfis conservadores e arrojados recebam recomendações completamente diferentes.")
+st.title("🎯 Motor Quantitativo B3: Hiperpersonalização por Pesos e Perfil")
+st.markdown("Agora, cada alteração nos *sliders* de preferência recalcula o *score* matemático do zero, alterando a seleção dos ativos na hora.")
 
 # 1. PARÂMETROS MACRO
 st.sidebar.header("1. Perfil e Parâmetros")
@@ -12,20 +12,21 @@ capital_total = st.sidebar.number_input("Capital Disponível (R$)", min_value=10
 perfil_risco = st.sidebar.selectbox("Perfil de Risco", ["Conservador", "Moderado", "Arrojado"])
 horizonte_anos = st.sidebar.slider("Horizonte de Investimento (Anos)", min_value=1, max_value=30, value=5)
 
-# 2. PESOS CUSTOMIZÁVEIS (Regra dos sliders > 5 controla as colunas da tabela)
+# 2. PESOS CUSTOMIZÁVEIS (AGORA COM IMPACTO DIRETO NO RANKING)
 st.sidebar.header("2. Pesos e Critérios (0 a 10)")
-st.sidebar.markdown("Se definir **acima de 5**, o indicador e a média do setor aparecerão na tabela:")
-peso_dy = st.sidebar.slider("Dividend Yield (DY)", 0, 10, 6)
-peso_gov = st.sidebar.slider("Governança (Novo Mercado)", 0, 10, 6)
-peso_roe = st.sidebar.slider("Eficiência (ROE)", 0, 10, 6)
-peso_val = st.sidebar.slider("Valuation (P/L)", 0, 10, 4)
+st.sidebar.markdown("Mexa nos pesos para ver a carteira mudar instantaneamente:")
+peso_dy = st.sidebar.slider("Dividend Yield (DY)", 0, 10, 5)
+peso_gov = st.sidebar.slider("Governança (Novo Mercado)", 0, 10, 5)
+peso_roe = st.sidebar.slider("Eficiência (ROE)", 0, 10, 5)
+peso_val = st.sidebar.slider("Valuation (P/L)", 0, 10, 5)
 peso_sol = st.sidebar.slider("Solidez (Dívida/EBITDA)", 0, 10, 5)
 
-# Normalização de pesos
-soma = (peso_dy + peso_gov + peso_roe + peso_val + peso_sol) or 1
-p_dy, p_gov, p_roe, p_val, p_sol = peso_dy/soma, peso_gov/soma, peso_roe/soma, peso_val/soma, peso_sol/soma
+# Soma total para calcular a proporção exata de peso
+soma_pesos = (peso_dy + peso_gov + peso_roe + peso_val + peso_sol)
+if soma_pesos == 0:
+    soma_pesos = 1
 
-# 3. BASE DE DADOS AMPLIADA DA B3 COM DIFERENTES NÍVEIS DE RISCO
+# 3. BASE DE DADOS AMPLIADA DA B3
 @st.cache_data
 def carregar_base_b3():
     return pd.DataFrame([
@@ -62,7 +63,7 @@ def carregar_base_b3():
             "preco": 27.40, "dy": 0.091, "media_setor_dy": 0.065, "governanca": "Novo Mercado", "roe": 0.21, "media_setor_roe": 0.18,
             "pl": 5.2, "media_setor_pl": 7.5, "divida_ebitda": 0.0, "media_setor_divida": 0.0
         },
-        # --- AÇÕES - COMMODITIES E CICLICAS (RISCO ALTO) ---
+        # --- AÇÕES - COMMODITIES ---
         {
             "ticker": "VALE3 (Vale)", "classe": "Ações", "setor": "Mineração", "risco": "Alto", "prazo_min": 4,
             "preco": 62.00, "dy": 0.080, "media_setor_dy": 0.070, "governanca": "Novo Mercado", "roe": 0.18, "media_setor_roe": 0.15,
@@ -86,17 +87,28 @@ def carregar_base_b3():
         }
     ])
 
-# 4. CÁLCULO DO SCORE MULTI-FATORIAL
-def calcular_score(row):
+# 4. MOTOR DE CÁLCULO DINÂMICO MULTI-FATORIAL (Hipersensível aos Sliders)
+def calcular_score_personalizado(row):
     if row["classe"] == "Renda Fixa":
-        return 8.5
-    s_dy = min(row["dy"] * 50, 10)
-    s_gov = 10.0 if "Novo Mercado" in row["governanca"] else (8.0 if "Nível" in row["governanca"] else 6.0)
-    s_roe = min(row["roe"] * 25, 10)
-    s_val = max(0, 10 - (row["pl"] / 3)) if row["pl"] > 0 else 5
-    s_sol = max(0, 10 - (row["divida_ebitda"] * 2))
+        return 7.0  # Base neutra para renda fixa
     
-    return round((s_dy * p_dy) + (s_gov * p_gov) + (s_roe * p_roe) + (s_val * p_val) + (s_sol * p_sol), 2)
+    # Normaliza cada indicador numa escala de 0 a 10
+    s_dy = min(row["dy"] * 60, 10)
+    s_gov = 10.0 if "Novo Mercado" in row["governanca"] else (7.0 if "Nível" in row["governanca"] else 4.0)
+    s_roe = min(row["roe"] * 30, 10)
+    s_val = max(0, 10 - (row["pl"] / 2.5)) if row["pl"] > 0 else 5
+    s_sol = max(0, 10 - (row["divida_ebitda"] * 2.5))
+    
+    # Multiplica estritamente pelos pesos definidos pelo usuário nos sliders
+    score_ponderado = (
+        (s_dy * peso_dy) + 
+        (s_gov * peso_gov) + 
+        (s_roe * peso_roe) + 
+        (s_val * peso_val) + 
+        (s_sol * peso_sol)
+    ) / soma_pesos
+    
+    return round(score_ponderado, 2)
 
 def obter_alocacao(perfil):
     if perfil == "Conservador":
@@ -106,25 +118,26 @@ def obter_alocacao(perfil):
     else:
         return {"Renda Fixa": 0.15, "Ações": 0.60, "FIIs": 0.25}
 
-if st.button("Rodar Varredura e Otimização Inteligente", type="primary"):
+if st.button("Rodar Varredura e Otimização Dinâmica", type="primary"):
     df = carregar_base_b3()
     
-    # FILTRO DE RISCO ESTRITO BASEADO NO PERFIL DO USUÁRIO
+    # Filtro de Risco por Perfil
     if perfil_risco == "Conservador":
         riscos_permitidos = ["Baixo"]
     elif perfil_risco == "Moderado":
         riscos_permitidos = ["Baixo", "Médio"]
-    else: # Arrojado
+    else:
         riscos_permitidos = ["Baixo", "Médio", "Alto"]
         
     df = df[(df["risco"].isin(riscos_permitidos)) | (df["classe"] == "Renda Fixa")]
     
-    df["Score"] = df.apply(calcular_score, axis=1)
+    # Recalcula o score com base nos pesos alterados nos sliders
+    df["Score"] = df.apply(calcular_score_personalizado, axis=1)
     
     pesos = obter_alocacao(perfil_risco)
     carteira = []
     
-    st.subheader(f"📊 Carteira Ideal para o Perfil {perfil_risco}")
+    st.subheader(f"📊 Carteira Otimizada para o Perfil {perfil_risco}")
     
     for classe, peso_alvo in pesos.items():
         valor_classe = capital_total * peso_alvo
@@ -135,6 +148,7 @@ if st.button("Rodar Varredura e Otimização Inteligente", type="primary"):
         if candidatos.empty:
             candidatos = df[df["classe"] == classe].head(1)
             
+        # Ordena pelos novos scores gerados pelos pesos dos sliders
         candidatos = candidatos.sort_values(by="Score", ascending=False)
         selecionados = candidatos.head(2)
         
@@ -147,11 +161,12 @@ if st.button("Rodar Varredura e Otimização Inteligente", type="primary"):
                 "Risco": ativo["risco"],
                 "Preço (R$)": f"R$ {ativo['preco']:.2f}",
                 "Setor": ativo["setor"],
+                "Score Final": ativo["Score"],
                 "Alvo (%)": round((peso_alvo / len(selecionados)) * 100, 2),
                 "Valor (R$)": round(valor_por_ativo, 2),
             }
             
-            # EXIBE OS INDICADORES APENAS SE O SLIDER CORRESPONDENTE FOR > 5
+            # Exibe colunas extras se o slider for > 5
             if peso_dy > 5:
                 item["DY Ativo"] = f"{ativo['dy']*100:.1f}%"
                 item["Média Setor DY"] = f"{ativo['media_setor_dy']*100:.1f}%"
@@ -176,4 +191,4 @@ if st.button("Rodar Varredura e Otimização Inteligente", type="primary"):
     df_res = pd.DataFrame(carteira)
     st.dataframe(df_res, use_container_width=True)
     
-    st.success("✅ Agora o motor filtra os ativos pelo risco compatível com o seu perfil: perfis conservadores verão apenas opções seguras, enquanto perfis arrojados desbloqueiam os ativos de maior volatilidade e retorno!")
+    st.success("✅ Agora sim! O motor pondera diretamente os valores dos sliders na fórmula matemática. Se você alterar a prioridade de Dividend Yield para Governança, a ordem dos ativos no ranking se reorganiza de forma inteligente.")
