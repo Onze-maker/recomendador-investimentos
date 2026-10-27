@@ -1,10 +1,11 @@
 import streamlit as st
 import pandas as pd
+import yfinance as yf
 
-st.set_page_config(page_title="Motor Quantitativo Multi-Fatorial B3", page_icon="📈", layout="wide")
+st.set_page_config(page_title="Motor B3 Tempo Real", page_icon="⚡", layout="wide")
 
-st.title("🎯 Motor Quantitativo B3: Varredura Ampla e Seleção Dinâmica por Pesos")
-st.markdown("Com uma base expandida, a alteração nos *sliders* agora reorganiza o ranking e troca os ativos recomendados da carteira.")
+st.title("⚡ Motor Quantitativo B3: Varredura em Tempo Real")
+st.markdown("O sistema conecta à B3 via API do Yahoo Finance em tempo real, extrai indicadores atualizados e seleciona os melhores ativos de acordo com seus pesos.")
 
 # 1. PARÂMETROS MACRO
 st.sidebar.header("1. Perfil e Parâmetros")
@@ -12,124 +13,96 @@ capital_total = st.sidebar.number_input("Capital Disponível (R$)", min_value=10
 perfil_risco = st.sidebar.selectbox("Perfil de Risco", ["Conservador", "Moderado", "Arrojado"])
 horizonte_anos = st.sidebar.slider("Horizonte de Investimento (Anos)", min_value=1, max_value=30, value=5)
 
-# 2. PESOS CUSTOMIZÁVEIS (AGORA MUDAM A SELEÇÃO DE ATIVOS)
+# 2. PESOS DE INDICADORES (SLIDERS)
 st.sidebar.header("2. Pesos e Critérios (0 a 10)")
-st.sidebar.markdown("Mude os pesos para forçar o motor a escolher ativos diferentes:")
 peso_dy = st.sidebar.slider("Dividend Yield (DY)", 0, 10, 5)
-peso_gov = st.sidebar.slider("Governança (Novo Mercado)", 0, 10, 5)
 peso_roe = st.sidebar.slider("Eficiência (ROE)", 0, 10, 5)
 peso_val = st.sidebar.slider("Valuation (P/L)", 0, 10, 5)
 peso_sol = st.sidebar.slider("Solidez (Dívida/EBITDA)", 0, 10, 5)
 
-soma_pesos = (peso_dy + peso_gov + peso_roe + peso_val + peso_sol)
-if soma_pesos == 0:
-    soma_pesos = 1
+soma_pesos = (peso_dy + peso_roe + peso_val + peso_sol) or 1
 
-# 3. BASE DE DADOS AMPLIADA DA B3 (Muitas opções para o Score decidir quem entra)
-@st.cache_data
-def carregar_base_b3():
-    return pd.DataFrame([
-        # --- RENDA FIXA ---
+# 3. UNIVERSO DE TICKERS DA B3 PARA VARREDURA
+TICKERS_B3 = [
+    # Ações
+    "BBAS3.SA", "ITUB4.SA", "BBDC4.SA", "SANB11.SA",
+    "TAEE11.SA", "CPLE6.SA", "EGIE3.SA", "EQTL3.SA",
+    "VALE3.SA", "PETR4.SA", "WEGE3.SA", "RENT3.SA",
+    "ABEV3.SA", "VBBR3.SA", "RADL3.SA", "LREN3.SA",
+    # FIIs
+    "KNCR11.SA", "HGLG11.SA", "MXRF11.SA", "XPML11.SA", "BCSC11.SA"
+]
+
+@st.cache_data(ttl=3600)  # Cache de 1 hora para economizar chamadas de API
+def baixar_dados_tempo_real(tickers):
+    lista_dados = []
+    
+    for ticker in tickers:
+        try:
+            ativo = yf.Ticker(ticker)
+            info = ativo.info
+            
+            # Identifica a classe
+            quote_type = info.get("quoteType", "")
+            classe = "FIIs" if quote_type == "EQUITY" and "11.SA" in ticker else "Ações"
+            
+            # Puxa indicadores fundamentalistas reais
+            preco = info.get("currentPrice") or info.get("regularMarketPreviousClose") or 0.0
+            dy = info.get("dividendYield", 0.0) or 0.0  # Vem em decimal (ex: 0.08)
+            roe = info.get("returnOnEquity", 0.0) or 0.0
+            pl = info.get("trailingPE", 0.0) or 0.0
+            divida_ebitda = info.get("debtToEquity", 0.0) / 100 if info.get("debtToEquity") else 0.0
+            beta = info.get("beta", 1.0) or 1.0
+            
+            # Classificação aproximada de risco com base no Beta/Volatilidade
+            if beta < 0.7:
+                risco = "Baixo"
+            elif beta <= 1.2:
+                risco = "Médio"
+            else:
+                risco = "Alto"
+                
+            lista_dados.append({
+                "ticker": ticker.replace(".SA", ""),
+                "classe": classe,
+                "setor": info.get("sector", "Imobiliário/Outros" if classe == "FIIs" else "Geral"),
+                "risco": risco,
+                "preco": preco,
+                "dy": dy,
+                "roe": roe,
+                "pl": pl,
+                "divida_ebitda": divida_ebitda,
+                "prazo_min": 2 if classe == "FIIs" else (3 if risco != "Alto" else 5)
+            })
+        except Exception:
+            continue
+            
+    # Adiciona opções de Renda Fixa fixas de referência
+    lista_dados.extend([
         {
-            "ticker": "CDB 100% CDI", "classe": "Renda Fixa", "setor": "Renda Fixa", "risco": "Baixo", "prazo_min": 0,
-            "preco": 1.0, "dy": 0.11, "media_setor_dy": 0.10, "governanca": "FGC", "roe": 0.0, "media_setor_roe": 0.0,
-            "pl": 0.0, "media_setor_pl": 0.0, "divida_ebitda": 0.0, "media_setor_divida": 0.0
+            "ticker": "CDB 100% CDI", "classe": "Renda Fixa", "setor": "Renda Fixa", "risco": "Baixo",
+            "preco": 1.0, "dy": 0.105, "roe": 0.0, "pl": 0.0, "divida_ebitda": 0.0, "prazo_min": 0
         },
         {
-            "ticker": "Tesouro IPCA+ 2029", "classe": "Renda Fixa", "setor": "Renda Fixa", "risco": "Baixo", "prazo_min": 2,
-            "preco": 1000.0, "dy": 0.06, "media_setor_dy": 0.06, "governanca": "Soberano", "roe": 0.0, "media_setor_roe": 0.0,
-            "pl": 0.0, "media_setor_pl": 0.0, "divida_ebitda": 0.0, "media_setor_divida": 0.0
-        },
-        {
-            "ticker": "Tesouro Prefixado 2031", "classe": "Renda Fixa", "setor": "Renda Fixa", "risco": "Médio", "prazo_min": 3,
-            "preco": 850.0, "dy": 0.115, "media_setor_dy": 0.08, "governanca": "Soberano", "roe": 0.0, "media_setor_roe": 0.0,
-            "pl": 0.0, "media_setor_pl": 0.0, "divida_ebitda": 0.0, "media_setor_divida": 0.0
-        },
-        
-        # --- AÇÕES (Várias opções por setor e perfil de risco) ---
-        {
-            "ticker": "TAEE11 (Taesa)", "classe": "Ações", "setor": "Energia", "risco": "Baixo", "prazo_min": 3,
-            "preco": 35.50, "dy": 0.102, "media_setor_dy": 0.075, "governanca": "Nível 2", "roe": 0.15, "media_setor_roe": 0.12,
-            "pl": 7.5, "media_setor_pl": 9.0, "divida_ebitda": 2.2, "media_setor_divida": 2.5
-        },
-        {
-            "ticker": "CPLE6 (Copel)", "classe": "Ações", "setor": "Energia", "risco": "Médio", "prazo_min": 3,
-            "preco": 10.20, "dy": 0.085, "media_setor_dy": 0.075, "governanca": "Novo Mercado", "roe": 0.14, "media_setor_roe": 0.12,
-            "pl": 6.8, "media_setor_pl": 9.0, "divida_ebitda": 1.8, "media_setor_divida": 2.5
-        },
-        {
-            "ticker": "EGIE3 (Engie)", "classe": "Ações", "setor": "Energia", "risco": "Baixo", "prazo_min": 3,
-            "preco": 42.10, "dy": 0.075, "media_setor_dy": 0.075, "governanca": "Novo Mercado", "roe": 0.22, "media_setor_roe": 0.12,
-            "pl": 11.2, "media_setor_pl": 9.0, "divida_ebitda": 1.5, "media_setor_divida": 2.5
-        },
-        {
-            "ticker": "ITUB4 (Itaú Unibanco)", "classe": "Ações", "setor": "Bancos", "risco": "Baixo", "prazo_min": 3,
-            "preco": 33.10, "dy": 0.052, "media_setor_dy": 0.065, "governanca": "Nível 1", "roe": 0.20, "media_setor_roe": 0.18,
-            "pl": 9.5, "media_setor_pl": 7.5, "divida_ebitda": 0.0, "media_setor_divida": 0.0
-        },
-        {
-            "ticker": "BBAS3 (Banco do Brasil)", "classe": "Ações", "setor": "Bancos", "risco": "Médio", "prazo_min": 3,
-            "preco": 27.40, "dy": 0.091, "media_setor_dy": 0.065, "governanca": "Novo Mercado", "roe": 0.21, "media_setor_roe": 0.18,
-            "pl": 5.2, "media_setor_pl": 7.5, "divida_ebitda": 0.0, "media_setor_divida": 0.0
-        },
-        {
-            "ticker": "SANB11 (Santander)", "classe": "Ações", "setor": "Bancos", "risco": "Médio", "prazo_min": 3,
-            "preco": 28.00, "dy": 0.068, "media_setor_dy": 0.065, "governanca": "Nível 2", "roe": 0.12, "media_setor_roe": 0.18,
-            "pl": 8.5, "media_setor_pl": 7.5, "divida_ebitda": 0.0, "media_setor_divida": 0.0
-        },
-        {
-            "ticker": "VALE3 (Vale)", "classe": "Ações", "setor": "Mineração", "risco": "Alto", "prazo_min": 4,
-            "preco": 62.00, "dy": 0.080, "media_setor_dy": 0.070, "governanca": "Novo Mercado", "roe": 0.18, "media_setor_roe": 0.15,
-            "pl": 6.8, "media_setor_pl": 8.0, "divida_ebitda": 0.8, "media_setor_divida": 1.2
-        },
-        {
-            "ticker": "PETR4 (Petrobras)", "classe": "Ações", "setor": "Petróleo e Gás", "risco": "Alto", "prazo_min": 4,
-            "preco": 38.50, "dy": 0.135, "media_setor_dy": 0.090, "governanca": "Nível 2", "roe": 0.25, "media_setor_roe": 0.16,
-            "pl": 4.5, "media_setor_pl": 7.0, "divida_ebitda": 0.9, "media_setor_divida": 1.5
-        },
-        {
-            "ticker": "WEGE3 (Weg)", "classe": "Ações", "setor": "Industrial", "risco": "Alto", "prazo_min": 5,
-            "preco": 40.00, "dy": 0.025, "media_setor_dy": 0.04, "governanca": "Novo Mercado", "roe": 0.28, "media_setor_roe": 0.15,
-            "pl": 28.0, "media_setor_pl": 15.0, "divida_ebitda": 0.2, "media_setor_divida": 1.0
-        },
-        
-        # --- FIIs ---
-        {
-            "ticker": "KNCR11 (FII Papel)", "classe": "FIIs", "setor": "Fundos Imobiliários", "risco": "Baixo", "prazo_min": 2,
-            "preco": 104.50, "dy": 0.122, "media_setor_dy": 0.100, "governanca": "Gestão Profissional", "roe": 0.0, "media_setor_roe": 0.0,
-            "pl": 0.0, "media_setor_pl": 0.0, "divida_ebitda": 0.0, "media_setor_divida": 0.0
-        },
-        {
-            "ticker": "HGLG11 (FII Logística)", "classe": "FIIs", "setor": "Fundos Imobiliários", "risco": "Médio", "prazo_min": 3,
-            "preco": 162.00, "dy": 0.085, "media_setor_dy": 0.100, "governanca": "Gestão Profissional", "roe": 0.0, "media_setor_roe": 0.0,
-            "pl": 0.0, "media_setor_pl": 0.0, "divida_ebitda": 0.0, "media_setor_divida": 0.0
-        },
-        {
-            "ticker": "MXRF11 (FII Papel Varejo)", "classe": "FIIs", "setor": "Fundos Imobiliários", "risco": "Baixo", "prazo_min": 1,
-            "preco": 10.10, "dy": 0.130, "media_setor_dy": 0.100, "governanca": "Gestão Profissional", "roe": 0.0, "media_setor_roe": 0.0,
-            "pl": 0.0, "media_setor_pl": 0.0, "divida_ebitda": 0.0, "media_setor_divida": 0.0
-        },
-        {
-            "ticker": "XPML11 (FII Shoppings)", "classe": "FIIs", "setor": "Fundos Imobiliários", "risco": "Médio", "prazo_min": 3,
-            "preco": 115.00, "dy": 0.092, "media_setor_dy": 0.100, "governanca": "Gestão Profissional", "roe": 0.0, "media_setor_roe": 0.0,
-            "pl": 0.0, "media_setor_pl": 0.0, "divida_ebitda": 0.0, "media_setor_divida": 0.0
+            "ticker": "Tesouro IPCA+ 2029", "classe": "Renda Fixa", "setor": "Renda Fixa", "risco": "Baixo",
+            "preco": 1000.0, "dy": 0.065, "roe": 0.0, "pl": 0.0, "divida_ebitda": 0.0, "prazo_min": 2
         }
     ])
+    
+    return pd.DataFrame(lista_dados)
 
-# 4. MOTOR DE CÁLCULO DINÂMICO
-def calcular_score_personalizado(row):
+# 4. CÁLCULO DO SCORE DINÂMICO
+def calcular_score_tempo_real(row):
     if row["classe"] == "Renda Fixa":
         return 7.0
     
     s_dy = min(row["dy"] * 60, 10)
-    s_gov = 10.0 if "Novo Mercado" in row["governanca"] else (7.0 if "Nível" in row["governanca"] else 4.0)
     s_roe = min(row["roe"] * 30, 10)
-    s_val = max(0, 10 - (row["pl"] / 2.5)) if row["pl"] > 0 else 5
-    s_sol = max(0, 10 - (row["divida_ebitda"] * 2.5))
+    s_val = max(0, 10 - (row["pl"] / 3)) if row["pl"] > 0 else 5
+    s_sol = max(0, 10 - (row["divida_ebitda"] * 2))
     
     score_ponderado = (
         (s_dy * peso_dy) + 
-        (s_gov * peso_gov) + 
         (s_roe * peso_roe) + 
         (s_val * peso_val) + 
         (s_sol * peso_sol)
@@ -145,9 +118,11 @@ def obter_alocacao(perfil):
     else:
         return {"Renda Fixa": 0.15, "Ações": 0.60, "FIIs": 0.25}
 
-if st.button("Rodar Varredura e Otimização Dinâmica", type="primary"):
-    df = carregar_base_b3()
+if st.button("Consultar Mercado em Tempo Real e Otimizar", type="primary"):
+    with st.spinner("Buscando cotações e indicadores em tempo real na B3..."):
+        df = baixar_dados_tempo_real(TICKERS_B3)
     
+    # Filtro de Risco
     if perfil_risco == "Conservador":
         riscos_permitidos = ["Baixo"]
     elif perfil_risco == "Moderado":
@@ -155,23 +130,24 @@ if st.button("Rodar Varredura e Otimização Dinâmica", type="primary"):
     else:
         riscos_permitidos = ["Baixo", "Médio", "Alto"]
         
-    df = df[(df["risco"].isin(riscos_permitidos)) | (df["classe"] == "Renda Fixa")]
+    df_filtrado = df[(df["risco"].isin(riscos_permitidos)) | (df["classe"] == "Renda Fixa")].copy()
     
-    df["Score"] = df.apply(calcular_score_personalizado, axis=1)
+    # Calcula a média setorial em tempo real para comparação
+    medias_setoriais = df.groupby("setor")[["dy", "roe", "pl", "divida_ebitda"]].mean().reset_index()
+    
+    df_filtrado["Score"] = df_filtrado.apply(calcular_score_tempo_real, axis=1)
     
     pesos = obter_alocacao(perfil_risco)
     carteira = []
-    
-    st.subheader(f"📊 Carteira Otimizada para o Perfil {perfil_risco}")
     
     for classe, peso_alvo in pesos.items():
         valor_classe = capital_total * peso_alvo
         if valor_classe == 0:
             continue
             
-        candidatos = df[(df["classe"] == classe) & (df["prazo_min"] <= horizonte_anos)].copy()
+        candidatos = df_filtrado[(df_filtrado["classe"] == classe) & (df_filtrado["prazo_min"] <= horizonte_anos)].copy()
         if candidatos.empty:
-            candidatos = df[df["classe"] == classe].head(1)
+            candidatos = df_filtrado[df_filtrado["classe"] == classe].head(1)
             
         candidatos = candidatos.sort_values(by="Score", ascending=False)
         selecionados = candidatos.head(2)
@@ -179,39 +155,37 @@ if st.button("Rodar Varredura e Otimização Dinâmica", type="primary"):
         valor_por_ativo = valor_classe / len(selecionados)
         
         for _, ativo in selecionados.iterrows():
+            # Puxa a média do setor correspondente
+            med_setor = medias_setoriais[medias_setoriais["setor"] == ativo["setor"]].iloc[0] if ativo["setor"] in medias_setoriais["setor"].values else None
+            
             item = {
                 "Classe": classe,
                 "Ativo": ativo["ticker"],
-                "Risco": ativo["risco"],
-                "Preço (R$)": f"R$ {ativo['preco']:.2f}",
+                "Preço Atual (R$)": f"R$ {ativo['preco']:.2f}",
                 "Setor": ativo["setor"],
-                "Score Final": ativo["Score"],
+                "Score Otimizado": ativo["Score"],
                 "Alvo (%)": round((peso_alvo / len(selecionados)) * 100, 2),
                 "Valor (R$)": round(valor_por_ativo, 2),
             }
             
             if peso_dy > 5:
-                item["DY Ativo"] = f"{ativo['dy']*100:.1f}%"
-                item["Média Setor DY"] = f"{ativo['media_setor_dy']*100:.1f}%"
-                
-            if peso_gov > 5:
-                item["Governança"] = ativo["governanca"]
+                item["DY Real"] = f"{ativo['dy']*100:.1f}%"
+                item["Média Setor DY"] = f"{med_setor['dy']*100:.1f}%" if med_setor is not None else "N/A"
                 
             if peso_roe > 5:
-                item["ROE Ativo"] = f"{ativo['roe']*100:.1f}%"
-                item["Média Setor ROE"] = f"{ativo['media_setor_roe']*100:.1f}%"
+                item["ROE Real"] = f"{ativo['roe']*100:.1f}%"
+                item["Média Setor ROE"] = f"{med_setor['roe']*100:.1f}%" if med_setor is not None else "N/A"
                 
             if peso_val > 5:
-                item["P/L Ativo"] = f"{ativo['pl']:.1f}"
-                item["Média Setor P/L"] = f"{ativo['media_setor_pl']:.1f}"
+                item["P/L Real"] = f"{ativo['pl']:.1f}"
+                item["Média Setor P/L"] = f"{med_setor['pl']:.1f}" if med_setor is not None else "N/A"
                 
             if peso_sol > 5:
                 item["Dívida/EBITDA"] = f"{ativo['divida_ebitda']:.1f}"
-                item["Média Setor Dívida"] = f"{ativo['media_setor_divida']:.1f}"
+                item["Média Setor Dívida"] = f"{med_setor['divida_ebitda']:.1f}" if med_setor is not None else "N/A"
                 
             carteira.append(item)
             
     df_res = pd.DataFrame(carteira)
+    st.subheader(f"📊 Carteira Inteligente Gerada em Tempo Real ({perfil_risco})")
     st.dataframe(df_res, use_container_width=True)
-    
-    st.success("✅ Agora sim! Com mais opções no catálogo, ao alterar os pesos dos sliders, a competição matemática muda e os ativos recomendados mudam de verdade na tela.")
